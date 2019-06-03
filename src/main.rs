@@ -245,16 +245,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         )
         .unwrap();
-        writeln!(table, "<details>\n\n```").unwrap();
+        writeln!(table, "<details>\n").unwrap();
         for row in affected {
             writeln!(
                 table,
-                " * {}: [{}]({}) v. [{}]({}); cc {}",
+                " * {}: [{}]({}) v. [{}]({}); cc `{}`",
                 row.0, row.1, row.2, row.3, row.4, row.5
             )
             .unwrap();
         }
-        writeln!(table, "```\n\n</details>\n").unwrap();
+        writeln!(table, "\n</details>\n").unwrap();
     }
     std::io::stdout().write_all(table.as_bytes()).unwrap();
 
