@@ -220,41 +220,87 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 crate_name: capture[1].into(),
             });
         }
-        assert_eq!(crates.len(), 1, "{:?}: {:?}", regression.id, crates);
-        let cause = crates.pop().unwrap();
+        let name = match &regression.id {
+            CrateId::CratesIo { package, .. } => package.clone(),
+            CrateId::GitHub { user, repository } => format!("{}/{}", user, repository),
+        };
+        if end_log.contains("error: test failed, to rerun pass '--lib'") {
+            crates.push(SuspectedCause::TestFailure {
+                crate_name: name.clone(),
+            });
+        }
+        if end_log.contains("error: test failed, to rerun pass '--doc'") {
+            crates.push(SuspectedCause::DocTestFailure {
+                crate_name: name.clone(),
+            });
+        }
+        if crates.len() == 1 {
+            let cause = crates.pop().unwrap();
 
-        rows.entry(cause).or_insert_with(Vec::new).push((
-            &regression.id,
-            "start",
-            regression.log_url(&config, ToolchainType::Start),
-            "end",
-            regression.log_url(&config, ToolchainType::End),
-            format_owners_to_cc(&regression.id.owners().expect(&format!("{}", regression.id))),
-        ));
+            rows.entry(cause).or_insert_with(Vec::new).push((
+                &regression.id,
+                "start",
+                regression.log_url(&config, ToolchainType::Start),
+                "end",
+                regression.log_url(&config, ToolchainType::End),
+                format_owners_to_cc(&regression.id.owners().expect(&format!("{}", regression.id))),
+            ));
+        } else {
+            rows.entry(SuspectedCause::Unknown)
+                .or_insert_with(Vec::new)
+                .push((
+                    &regression.id,
+                    "start",
+                    regression.log_url(&config, ToolchainType::Start),
+                    "end",
+                    regression.log_url(&config, ToolchainType::End),
+                    format_owners_to_cc(
+                        &regression.id.owners().expect(&format!("{}", regression.id)),
+                    ),
+                ));
+        }
     }
     let mut table = String::new();
     for (cause, affected) in rows {
-        writeln!(
-            table,
-            "\nroot: {} - {} detected crates which regressed due to this; {}",
-            cause.crate_name(),
-            affected.len(),
-            match owners_for_crate_name(&cause.crate_name()) {
-                Ok(v) => format!("cc {}", format_owners_to_cc(&v)),
-                Err(_) => format!("no owner?"),
-            }
-        )
-        .unwrap();
-        writeln!(table, "<details>\n").unwrap();
-        for row in affected {
+        if affected.len() == 1 {
+            let row = &affected[0];
             writeln!(
                 table,
-                " * {}: [{}]({}) v. [{}]({}); cc `{}`",
+                " * root: {}: [{}]({}) v. [{}]({}); cc {}",
                 row.0, row.1, row.2, row.3, row.4, row.5
             )
             .unwrap();
+        } else {
+            writeln!(
+                table,
+                "\nroot: {} - {} detected crates which regressed due to this; {}",
+                cause,
+                affected.len(),
+                match cause
+                    .crate_name()
+                    .and_then(|n| owners_for_crate_name(&n).ok())
+                {
+                    Some(v) => format!("cc {}", format_owners_to_cc(&v)),
+                    None => format!("no owner?"),
+                }
+            )
+            .unwrap();
+            writeln!(table, "<details>\n").unwrap();
+            for row in affected {
+                let author = if cause == SuspectedCause::Unknown {
+                    row.5
+                } else {
+                    format!("`{}`", row.5)
+                };
+                writeln!(
+                    table,
+                    " * {}: [{}]({}) v. [{}]({}); cc {}",
+                    row.0, row.1, row.2, row.3, row.4, author
+                )
+                .unwrap();
+            }
+            writeln!(table, "\n</details>\n").unwrap();
         }
-        writeln!(table, "\n</details>\n").unwrap();
     }
     std::io::stdout().write_all(table.as_bytes()).unwrap();
 
@@ -278,13 +324,32 @@ enum ToolchainType {
 enum SuspectedCause {
     CompileError { crate_name: String },
     DocumentaionError { crate_name: String },
+    TestFailure { crate_name: String },
+    DocTestFailure { crate_name: String },
+    Unknown,
+}
+
+impl fmt::Display for SuspectedCause {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let name = match self {
+            SuspectedCause::CompileError { crate_name } => crate_name.as_str(),
+            SuspectedCause::DocumentaionError { crate_name } => crate_name.as_str(),
+            SuspectedCause::TestFailure { crate_name } => crate_name.as_str(),
+            SuspectedCause::DocTestFailure { crate_name } => crate_name.as_str(),
+            SuspectedCause::Unknown => return write!(f, "unknown causes"),
+        };
+        write!(f, "{}", name)
+    }
 }
 
 impl SuspectedCause {
-    fn crate_name(&self) -> &str {
+    fn crate_name(&self) -> Option<&str> {
         match self {
-            SuspectedCause::CompileError { crate_name } => crate_name.as_str(),
-            SuspectedCause::DocumentaionError { crate_name } => crate_name.as_str(),
+            SuspectedCause::CompileError { crate_name } => Some(crate_name.as_str()),
+            SuspectedCause::DocumentaionError { crate_name } => Some(crate_name.as_str()),
+            SuspectedCause::TestFailure { crate_name } => Some(crate_name.as_str()),
+            SuspectedCause::DocTestFailure { crate_name } => Some(crate_name.as_str()),
+            SuspectedCause::Unknown => None,
         }
     }
 }
