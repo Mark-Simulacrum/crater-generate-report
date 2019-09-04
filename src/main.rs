@@ -94,8 +94,14 @@ impl fmt::Display for CrateId {
 }
 
 #[derive(serde::Deserialize, Debug)]
-struct ToolchainSource {
-    name: String,
+#[serde(tag = "type")]
+enum ToolchainSource {
+    #[serde(rename = "ci")]
+    Ci {
+        sha: String,
+        #[serde(rename = "try")]
+        try_: bool,
+    },
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -110,12 +116,39 @@ struct Config {
 }
 
 impl Config {
-    fn toolchain_name(&self, ty: ToolchainType) -> &str {
+    fn toolchain_name(&self, ty: ToolchainType) -> String {
         let idx = match ty {
             ToolchainType::Start => 0,
             ToolchainType::End => 1,
         };
-        &self.toolchains[idx].source.name
+        match &self.toolchains[idx].source {
+            ToolchainSource::Ci { sha, try_ } => {
+                format!("{}#{}", if *try_ { "try" } else { "master" }, sha)
+            }
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum CcWho {
+    All,
+    Roots,
+    None,
+}
+
+impl CcWho {
+    fn causes(self) -> bool {
+        match self {
+            CcWho::All => true,
+            CcWho::Roots | CcWho::None => false,
+        }
+    }
+
+    fn roots(self) -> bool {
+        match self {
+            CcWho::All | CcWho::Roots => true,
+            CcWho::None => false,
+        }
     }
 }
 
@@ -125,6 +158,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Usage: {} <experiment name>", args[0]);
         std::process::exit(1);
     });
+    let cc_ty = args.get(2).unwrap_or_else(|| {
+        eprintln!("Usage: {} <experiment name> <all|roots|none>", args[0]);
+        std::process::exit(1);
+    });
+    let cc_ty = match cc_ty.as_str() {
+        "all" => CcWho::All,
+        "roots" => CcWho::Roots,
+        "none" => CcWho::None,
+        _ => {
+            eprintln!("Wrong second parameter: {:?}", cc_ty);
+            eprintln!("Usage: {} <experiment name> <all|roots|none>", args[0]);
+            std::process::exit(1);
+        }
+    };
 
     let url = format!(
         "https://crater-reports.s3.amazonaws.com/{}/config.json",
@@ -266,22 +313,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let row = &affected[0];
             writeln!(
                 table,
-                " * root: {}: [{}]({}) v. [{}]({}); cc {}",
-                row.0, row.1, row.2, row.3, row.4, row.5
+                " * root: {}: [{}]({}) v. [{}]({}){}",
+                row.0,
+                row.1,
+                row.2,
+                row.3,
+                row.4,
+                if cc_ty.roots() {
+                    format!("; cc {}", row.5)
+                } else {
+                    String::new()
+                }
             )
             .unwrap();
         } else {
             writeln!(
                 table,
-                "\nroot: {} - {} detected crates which regressed due to this; {}",
+                "\nroot: {} - {} detected crates which regressed due to this{}",
                 cause,
                 affected.len(),
-                match cause
-                    .crate_name()
-                    .and_then(|n| owners_for_crate_name(&n).ok())
-                {
-                    Some(v) => format!("cc {}", format_owners_to_cc(&v)),
-                    None => format!("no owner?"),
+                if cc_ty.roots() {
+                    match cause
+                        .crate_name()
+                        .and_then(|n| owners_for_crate_name(&n).ok())
+                    {
+                        Some(v) => format!("; cc {}", format_owners_to_cc(&v)),
+                        None => format!("no owner?"),
+                    }
+                } else {
+                    String::new()
                 }
             )
             .unwrap();
@@ -294,8 +354,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 writeln!(
                     table,
-                    " * {}: [{}]({}) v. [{}]({}); cc {}",
-                    row.0, row.1, row.2, row.3, row.4, author
+                    " * {}: [{}]({}) v. [{}]({}){}",
+                    row.0,
+                    row.1,
+                    row.2,
+                    row.3,
+                    row.4,
+                    if cc_ty.causes() {
+                        format!("; cc {}", author)
+                    } else {
+                        String::new()
+                    }
                 )
                 .unwrap();
             }
