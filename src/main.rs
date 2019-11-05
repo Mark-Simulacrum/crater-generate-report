@@ -102,6 +102,8 @@ enum ToolchainSource {
         #[serde(rename = "try")]
         try_: bool,
     },
+    #[serde(rename = "dist")]
+    Dist { name: String },
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -125,6 +127,7 @@ impl Config {
             ToolchainSource::Ci { sha, try_ } => {
                 format!("{}#{}", if *try_ { "try" } else { "master" }, sha)
             }
+            ToolchainSource::Dist { name } => name.clone(),
         }
     }
 }
@@ -159,13 +162,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     });
     let cc_ty = args.get(2).unwrap_or_else(|| {
-        eprintln!("Usage: {} <experiment name> <all|roots|none>", args[0]);
+        eprintln!(
+            "Usage: {} <experiment name> <all|roots|none|print-list>",
+            args[0]
+        );
         std::process::exit(1);
     });
     let cc_ty = match cc_ty.as_str() {
         "all" => CcWho::All,
         "roots" => CcWho::Roots,
         "none" => CcWho::None,
+        "print-list" => CcWho::None,
         _ => {
             eprintln!("Wrong second parameter: {:?}", cc_ty);
             eprintln!("Usage: {} <experiment name> <all|roots|none>", args[0]);
@@ -251,11 +258,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .insert(&config, &toolchain, log);
     }
 
-    let compile_regex = Regex::new(r#"Could not compile `([^)]+?)`"#).unwrap();
+    let compile_regex = Regex::new(r#"[Cc]ould not compile `([^)]+?)`"#).unwrap();
     let document_regex = Regex::new(r#"Could not document `([^`)]+?)`"#).unwrap();
     let mut rows = BTreeMap::new();
+    let mut crate_list = String::new();
     for regression in regressions.values() {
         let end_log = regression.log(ToolchainType::End);
+        {
+            let id = match &regression.id {
+                CrateId::CratesIo { package, .. } => package.clone(),
+                CrateId::GitHub { user, repository } => format!("{}/{}", user, repository),
+            };
+            writeln!(&mut crate_list, "{}", id).unwrap();
+        }
         let mut crates = Vec::new();
         for capture in compile_regex.captures_iter(&end_log) {
             crates.push(SuspectedCause::CompileError {
@@ -307,6 +322,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ));
         }
     }
+    std::fs::write("crate-list.txt", crate_list.trim_end_matches(",")).unwrap();
+
     let mut table = String::new();
     for (cause, affected) in rows {
         if affected.len() == 1 {
