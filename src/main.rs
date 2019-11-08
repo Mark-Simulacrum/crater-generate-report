@@ -76,6 +76,13 @@ fn format_owners_to_cc(owners: &[String]) -> String {
 }
 
 impl CrateId {
+    fn is_github(&self) -> bool {
+        match self {
+            CrateId::CratesIo { .. } => false,
+            CrateId::GitHub { .. } => true,
+        }
+    }
+
     fn owners(&self) -> Result<Vec<String>, Box<dyn std::error::Error>> {
         match self {
             CrateId::CratesIo { package, .. } => owners_for_crate_name(&package),
@@ -97,11 +104,7 @@ impl fmt::Display for CrateId {
 #[serde(tag = "type")]
 enum ToolchainSource {
     #[serde(rename = "ci")]
-    Ci {
-        sha: String,
-        #[serde(rename = "try")]
-        try_: bool,
-    },
+    Ci { sha: String },
     #[serde(rename = "dist")]
     Dist { name: String },
 }
@@ -109,6 +112,7 @@ enum ToolchainSource {
 #[derive(serde::Deserialize, Debug)]
 struct Toolchain {
     source: ToolchainSource,
+    ci_try: bool,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -124,9 +128,15 @@ impl Config {
             ToolchainType::End => 1,
         };
         match &self.toolchains[idx].source {
-            ToolchainSource::Ci { sha, try_ } => {
-                format!("{}#{}", if *try_ { "try" } else { "master" }, sha)
-            }
+            ToolchainSource::Ci { sha } => format!(
+                "{}#{}",
+                if self.toolchains[idx].ci_try {
+                    "try"
+                } else {
+                    "master"
+                },
+                sha
+            ),
             ToolchainSource::Dist { name } => name.clone(),
         }
     }
@@ -346,9 +356,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             writeln!(
                 table,
-                "\nroot: {} - {} detected crates which regressed due to this{}",
+                "\nroot: {} - {} ({} gh, {} crates.io) detected crates which regressed due to this{}",
                 cause,
                 affected.len(),
+                affected.iter().filter(|a| a.0.is_github()).count(),
+                affected.iter().filter(|a| !a.0.is_github()).count(),
                 if cc_ty.roots() {
                     match cause
                         .crate_name()
