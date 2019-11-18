@@ -3,7 +3,7 @@
 ## Usage
 
 ```
-cargo run --release -- <crater experiment name> > report.md
+cargo run --release -- <crater experiment name> none > report.md
 ```
 
 The tool will print to stdout in a format that identifies the root crates responible as much as is
