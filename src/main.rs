@@ -6,7 +6,7 @@ use std::io::BufReader;
 use std::io::{Read, Write as _};
 
 lazy_static::lazy_static! {
-    static ref CLIENT: reqwest::Client = reqwest::Client::new();
+    static ref CLIENT: reqwest::blocking::Client = reqwest::blocking::Client::new();
 }
 
 percent_encoding::define_encode_set! {
@@ -163,6 +163,13 @@ impl CcWho {
             CcWho::None => false,
         }
     }
+
+    fn collect_owners(self) -> bool {
+        match self {
+            CcWho::All | CcWho::Roots => true,
+            CcWho::None => false,
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -194,7 +201,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "https://crater-reports.s3.amazonaws.com/{}/config.json",
         experiment
     );
-    let config: Config = reqwest::get(&url)
+    let config: Config = reqwest::blocking::get(&url)
         .unwrap_or_else(|e| {
             eprintln!("failed to get {:?}: {:?}", url, e);
             std::process::exit(1);
@@ -209,12 +216,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "https://crater-reports.s3.amazonaws.com/{}/logs-archives/regressed.tar.gz",
         experiment
     );
-    let res = reqwest::get(&url).unwrap_or_else(|e| {
+    let res = reqwest::blocking::get(&url).unwrap_or_else(|e| {
         eprintln!("failed to download regressed logs from {:?}: {:?}", url, e);
         std::process::exit(1);
     });
     let mut tarball = tar::Archive::new(GzDecoder::new(BufReader::new(res)));
     let mut regressions = BTreeMap::new();
+    eprintln!("parsing tarball into memory");
     for entry in tarball.entries()? {
         let mut entry = entry?;
 
@@ -268,8 +276,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .insert(&config, &toolchain, log);
     }
 
-    let compile_regex = Regex::new(r#"[Cc]ould not compile `([^)]+?)`"#).unwrap();
-    let document_regex = Regex::new(r#"Could not document `([^`)]+?)`"#).unwrap();
+    eprintln!("starting work");
+
+    let compile_regex = Regex::new(r#"[Cc]ould not compile `([^`)]+)`"#).unwrap();
+    let document_regex = Regex::new(r#"Could not document `([^`)]+)`"#).unwrap();
     let mut rows = BTreeMap::new();
     let mut crate_list = String::new();
     for regression in regressions.values() {
@@ -306,18 +316,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 crate_name: name.clone(),
             });
         }
-        if crates.len() == 1 {
-            let cause = crates.pop().unwrap();
+        crates.sort();
+        crates.dedup();
 
+        let is_empty = crates.is_empty();
+        while let Some(cause) = crates.pop() {
             rows.entry(cause).or_insert_with(Vec::new).push((
                 &regression.id,
                 "start",
                 regression.log_url(&config, ToolchainType::Start),
                 "end",
                 regression.log_url(&config, ToolchainType::End),
-                format_owners_to_cc(&regression.id.owners().expect(&format!("{}", regression.id))),
+                format_owners_to_cc(&if cc_ty.collect_owners() {
+                    regression.id.owners().expect(&format!("{}", regression.id))
+                } else {
+                    vec![]
+                }),
             ));
-        } else {
+        }
+
+        if is_empty {
             rows.entry(SuspectedCause::Unknown)
                 .or_insert_with(Vec::new)
                 .push((
@@ -326,9 +344,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     regression.log_url(&config, ToolchainType::Start),
                     "end",
                     regression.log_url(&config, ToolchainType::End),
-                    format_owners_to_cc(
-                        &regression.id.owners().expect(&format!("{}", regression.id)),
-                    ),
+                    format_owners_to_cc(&if cc_ty.collect_owners() {
+                        regression.id.owners().expect(&format!("{}", regression.id))
+                    } else {
+                        vec![]
+                    }),
                 ));
         }
     }
