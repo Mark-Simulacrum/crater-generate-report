@@ -356,16 +356,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut table = String::new();
     for (cause, affected) in rows {
-        if affected.len() == 1 {
+        if affected.len() == 1 || std::env::var_os("COLLAPSE").is_some() {
             let row = &affected[0];
             writeln!(
                 table,
-                " * root: {}: [{}]({}) v. [{}]({}){}",
-                row.0,
-                row.1,
-                row.2,
+                " * root: {}: {} dependents [{}]({}) v. [{}]({}){}",
+                cause,
+                affected.len(),
                 row.3,
                 row.4,
+                row.1,
+                row.2,
                 if cc_ty.roots() {
                     format!("; cc {}", row.5)
                 } else {
