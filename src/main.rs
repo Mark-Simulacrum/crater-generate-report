@@ -230,27 +230,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         entry.read_to_string(&mut log)?;
 
         let path = entry.path()?;
-        let name = path
-            .components()
-            .nth(2)
-            .unwrap()
-            .as_os_str()
-            .to_string_lossy()
-            .to_string();
-        let version_or_repo = path
-            .components()
-            .nth(3)
-            .unwrap()
-            .as_os_str()
-            .to_string_lossy()
-            .to_string();
-        let toolchain = path
-            .components()
-            .nth(4)
-            .unwrap()
-            .as_os_str()
-            .to_string_lossy()
-            .replace(".txt", "");
+        let components: Vec<_> = path.components().map(|c| c.as_os_str().to_string_lossy().to_string()).collect();
+        let name = components[2].clone();
+        let version_or_repo = components[3].clone();
+
+        // Some Github crates will have a path component for the SHA
+        // See https://github.com/rust-lang/crater/commit/7380ba85d0e0171615a423fedb371e5bb915d6de
+        let mut toolchain = if components.len() == 5 {
+            components[4].clone()
+        } else if components.len() == 6 {
+            // In this case, components[4] is the SHA from Github
+            components[5].clone()
+        } else {
+            panic!("Unknown path format {:?}", path)
+        };
+        toolchain = toolchain.replace(".txt", "");
 
         let res = match path.components().nth(1).unwrap() {
             std::path::Component::Normal(v) => {
